@@ -301,6 +301,7 @@
                   <th class="py-3 px-4">Name</th>
                   <th class="py-3 px-4">Interface</th>
                   <th class="py-3 px-4">Type</th>
+                  <th class="py-3 px-4">HiLink Web UI Port</th>
                   <th class="py-3 px-4">Signal RSSI</th>
                   <th class="py-3 px-4">IMEI / ID</th>
                   <th class="py-3 px-4 text-right">Actions</th>
@@ -917,6 +918,12 @@
           <td class="py-3 px-4 font-bold text-slate-700">${m.name || 'Modem ' + m.id}</td>
           <td class="py-3 px-4 font-mono">${m.iface}</td>
           <td class="py-3 px-4 uppercase font-semibold text-[11px]">${m.type}</td>
+          <td class="py-3 px-4 font-mono font-bold">
+            <a href="http://${window.location.hostname}:${12000 + m.id}" target="_blank" class="bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-lg inline-flex items-center space-x-1.5 transition" title="Click to open HiLink web page directly in browser">
+              <span>:${12000 + m.id}</span>
+              <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i>
+            </a>
+          </td>
           <td class="py-3 px-4 font-semibold text-emerald-600"><i class="fa-solid fa-signal mr-1.5"></i>${m.signal}%</td>
           <td class="py-3 px-4 font-mono text-slate-400">${m.imei}</td>
           <td class="py-3 px-4 text-right space-x-2">
