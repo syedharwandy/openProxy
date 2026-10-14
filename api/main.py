@@ -49,19 +49,22 @@ def provision_new_interface(iface: str, db: dict):
     dev_type, dev_target = detect_device_type(iface)
     base_port = 10000 + new_id
     try:
-        setup_namespace(new_id, iface)
+        setup_namespace(new_id, iface, dev_target)
         ports = [{
             "port": base_port,
             "user": f"user{new_id}",
             "password": f"pass{new_id}"
         }]
-        deploy_gost_shared_ports(new_id, ports)
+        deploy_gost_shared_ports(new_id, ports, dev_target)
         db["modems"][str(new_id)] = {
+            "name": f"Modem {new_id} ({iface})",
             "iface": iface,
             "type": dev_type,
             "target": dev_target,
             "group": "Default Pool",
             "ports": ports,
+            "whitelist_ips": [],
+            "auto_rotate_minutes": 0,
             "signal": 85,
             "imei": "864201048" + str(100000 + new_id),
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -88,12 +91,17 @@ async def autorotate_worker():
     while True:
         try:
             db = get_db()
-            interval = db.get("auto_rotate_minutes", 0)
-            if interval > 0 and (time.time() - last_rot) >= (interval * 60):
-                for m_id, m in db.get("modems", {}).items():
+            global_interval = db.get("auto_rotate_minutes", 0)
+            now = time.time()
+            for m_id, m in db.get("modems", {}).items():
+                m_interval = m.get("auto_rotate_minutes", 0)
+                interval = m_interval if m_interval > 0 else global_interval
+                last_m_rot = m.get("last_rotated", 0)
+                if interval > 0 and (now - last_m_rot) >= (interval * 60):
                     ns = f"ns_modem{m_id}"
-                    execute_sticky_rotation(ns, m["type"], m["target"])
-                last_rot = time.time()
+                    res = execute_sticky_rotation(ns, m["type"], m["target"])
+                    m["last_rotated"] = now
+                    save_db(db)
         except Exception as e:
             print(f"Auto-rotate worker: {e}")
         await asyncio.sleep(15)
@@ -103,8 +111,8 @@ async def startup_restore():
     db = get_db()
     for m_id, m in db.get("modems", {}).items():
         try:
-            setup_namespace(int(m_id), m["iface"])
-            deploy_gost_shared_ports(int(m_id), m.get("ports", []))
+            setup_namespace(int(m_id), m["iface"], m.get("target", "192.168.8.1"))
+            deploy_gost_shared_ports(int(m_id), m.get("ports", []), m.get("target", "192.168.8.1"))
         except Exception as e:
             print(f"Startup restore modem {m_id}: {e}")
     try:
@@ -118,6 +126,7 @@ async def startup_restore():
 class ModemAdd(BaseModel):
     id: int
     iface: str
+    name: Optional[str] = None
     type: str = "hilink"
     target: str = "192.168.8.1"
     base_port: int = 10001
@@ -125,6 +134,19 @@ class ModemAdd(BaseModel):
     password: str = "proxypass"
     shared_ports_count: int = 1
     group: Optional[str] = "Default Pool"
+
+class ModemUpdate(BaseModel):
+    name: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    base_port: Optional[int] = None
+    whitelist_ips: Optional[List[str]] = None
+    auto_rotate_minutes: Optional[int] = None
+    group: Optional[str] = None
+
+class CredentialsUpdate(BaseModel):
+    username: str
+    password: str
 
 class SettingsReq(BaseModel):
     auto_rotate_minutes: int
@@ -149,8 +171,7 @@ def dashboard():
     modems = []
     online_count = 0
     positions = {}
-    
-    # 20 Hardware Slot positions
+
     for i in range(1, 21):
         s_id = str(i)
         if s_id in db.get("modems", {}):
@@ -162,6 +183,7 @@ def dashboard():
                 online_count += 1
             modem_obj = {
                 "id": i,
+                "name": m.get("name", f"Modem {i}"),
                 "iface": m["iface"],
                 "type": m["type"],
                 "target": m["target"],
@@ -169,8 +191,11 @@ def dashboard():
                 "public_ip": ip,
                 "status": "online" if is_online else "error",
                 "ports": m.get("ports", []),
+                "whitelist_ips": m.get("whitelist_ips", []),
+                "auto_rotate_minutes": m.get("auto_rotate_minutes", 0),
                 "signal": m.get("signal", 85),
-                "imei": m.get("imei", "N/A")
+                "imei": m.get("imei", "N/A"),
+                "hilink_port": 12000 + i
             }
             modems.append(modem_obj)
             positions[s_id] = modem_obj
@@ -194,6 +219,87 @@ def dashboard():
         "modems": modems
     }
 
+@app.get("/api/modems/{modem_id}")
+def get_modem(modem_id: int):
+    db = get_db()
+    s_id = str(modem_id)
+    if s_id not in db.get("modems", {}):
+        raise HTTPException(404, "Modem not found")
+    m = db["modems"][s_id]
+    ns = f"ns_modem{modem_id}"
+    ip = get_current_ip(ns)
+    return {
+        "id": modem_id,
+        "name": m.get("name", f"Modem {modem_id}"),
+        "iface": m["iface"],
+        "type": m["type"],
+        "target": m["target"],
+        "group": m.get("group", "Default Pool"),
+        "public_ip": ip,
+        "status": "online" if ip not in ["Offline", ""] else "offline",
+        "ports": m.get("ports", []),
+        "whitelist_ips": m.get("whitelist_ips", []),
+        "auto_rotate_minutes": m.get("auto_rotate_minutes", 0),
+        "signal": m.get("signal", 85),
+        "imei": m.get("imei", "N/A"),
+        "hilink_port": 12000 + modem_id
+    }
+
+@app.put("/api/modems/{modem_id}")
+def update_modem(modem_id: int, req: ModemUpdate):
+    db = get_db()
+    s_id = str(modem_id)
+    if s_id not in db.get("modems", {}):
+        raise HTTPException(404, "Modem not found")
+
+    m = db["modems"][s_id]
+    if req.name is not None and req.name.strip():
+        m["name"] = req.name.strip()
+    if req.group is not None:
+        m["group"] = req.group.strip()
+    if req.whitelist_ips is not None:
+        m["whitelist_ips"] = [ip.strip() for ip in req.whitelist_ips if ip.strip()]
+    if req.auto_rotate_minutes is not None:
+        m["auto_rotate_minutes"] = req.auto_rotate_minutes
+
+    needs_gost_restart = False
+    ports = m.get("ports", [])
+    if req.username is not None or req.password is not None or req.base_port is not None:
+        needs_gost_restart = True
+        for i, p in enumerate(ports):
+            if req.username is not None and req.username.strip():
+                p["user"] = f"{req.username.strip()}_{i+1}" if len(ports) > 1 else req.username.strip()
+            if req.password is not None and req.password.strip():
+                p["password"] = req.password.strip()
+            if req.base_port is not None:
+                p["port"] = req.base_port + i
+        m["ports"] = ports
+
+    db["modems"][s_id] = m
+    save_db(db)
+
+    if needs_gost_restart:
+        deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.8.1"))
+
+    return {"status": "success", "modem": m}
+
+@app.post("/api/modems/{modem_id}/credentials")
+def update_credentials(modem_id: int, creds: CredentialsUpdate):
+    db = get_db()
+    s_id = str(modem_id)
+    if s_id not in db.get("modems", {}):
+        raise HTTPException(404, "Modem not found")
+    m = db["modems"][s_id]
+    ports = m.get("ports", [])
+    for i, p in enumerate(ports):
+        p["user"] = f"{creds.username.strip()}_{i+1}" if len(ports) > 1 else creds.username.strip()
+        p["password"] = creds.password.strip()
+    m["ports"] = ports
+    db["modems"][s_id] = m
+    save_db(db)
+    deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.8.1"))
+    return {"status": "success", "message": "Credentials updated"}
+
 @app.get("/api/proxies")
 def list_proxies():
     db = get_db()
@@ -204,9 +310,11 @@ def list_proxies():
         for p in m.get("ports", []):
             items.append({
                 "position": int(m_id),
+                "name": m.get("name", f"Modem {m_id}"),
                 "iface": m["iface"],
                 "socks_port": p["port"],
                 "http_port": p["port"] + 1000,
+                "hilink_port": 12000 + int(m_id),
                 "user": p["user"],
                 "password": p["password"],
                 "public_ip": ip,
@@ -228,7 +336,7 @@ def trigger_scan():
 
 @app.post("/api/modems")
 def add_modem(m: ModemAdd):
-    setup_namespace(m.id, m.iface)
+    setup_namespace(m.id, m.iface, m.target)
     ports = []
     for i in range(m.shared_ports_count):
         ports.append({
@@ -236,14 +344,17 @@ def add_modem(m: ModemAdd):
             "user": f"{m.username}_{i+1}" if m.shared_ports_count > 1 else m.username,
             "password": m.password
         })
-    deploy_gost_shared_ports(m.id, ports)
+    deploy_gost_shared_ports(m.id, ports, m.target)
     db = get_db()
     db["modems"][str(m.id)] = {
+        "name": m.name or f"Modem {m.id} ({m.iface})",
         "iface": m.iface,
         "type": m.type,
         "target": m.target,
         "group": m.group or "Default Pool",
         "ports": ports,
+        "whitelist_ips": [],
+        "auto_rotate_minutes": 0,
         "signal": 90,
         "imei": "864201048" + str(100000 + m.id),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
@@ -333,7 +444,6 @@ def get_sms(modem_id: int):
 
 @app.post("/api/sms/send")
 def send_sms(payload: dict):
-    # Simulated SMS send confirmation
     return {"status": "sent", "to": payload.get("phone"), "text": payload.get("message")}
 
 @app.get("/api/ussd/{modem_id}")
