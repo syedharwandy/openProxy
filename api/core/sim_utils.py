@@ -1,32 +1,32 @@
-import re, requests, subprocess, xml.etree.ElementTree as ET
+import re, subprocess, json
 
-def read_sms_hilink(gateway_ip: str = "192.168.8.1") -> list:
-    s = requests.Session()
+def read_sms_hilink(modem_id: int = 1, gateway_ip: str = "192.168.0.1") -> list:
+    """Reads SMS messages from modem inside its isolated network namespace."""
+    ns = f"ns_modem{modem_id}"
+    py_code = (
+        "import requests, re, json, xml.etree.ElementTree as ET\n"
+        "s = requests.Session()\n"
+        f"gw = 'http://{gateway_ip}'\n"
+        "try:\n"
+        "    r = s.get(gw + '/api/webserver/SesTokInfo', timeout=3)\n"
+        "    m = re.search(r'<TokInfo>(.*?)</TokInfo>', r.text)\n"
+        "    tok = m.group(1) if m else ''\n"
+        "    h = {'__RequestVerificationToken': tok, 'Content-Type': 'application/x-www-form-urlencoded'}\n"
+        "    res = s.post(gw + '/api/sms/sms-list', data='<request><page>1</page><maxrecords>20</maxrecords><status>0</status></request>', headers=h, timeout=4)\n"
+        "    root = ET.fromstring(res.text)\n"
+        "    msgs = [{'phone': x.findtext('phone') or 'Unknown', 'date': x.findtext('date') or '', 'content': x.findtext('content') or ''} for x in root.findall('.//message')]\n"
+        "    print(json.dumps(msgs))\n"
+        "except Exception as e:\n"
+        "    print(json.dumps([]))\n"
+    )
     try:
-        r = s.get(f"http://{gateway_ip}/api/webserver/SesTokInfo", timeout=2)
-        m = re.search(r'<TokInfo>(.*?)</TokInfo>', r.text)
-        tok = m.group(1) if m else ""
-        h = {"__RequestVerificationToken": tok, "Content-Type": "application/x-www-form-urlencoded"}
-        res = s.post(
-            f"http://{gateway_ip}/api/sms/sms-list", 
-            data="<request><page>1</page><maxrecords>15</maxrecords><status>0</status></request>", 
-            headers=h, 
-            timeout=3
-        )
-        root = ET.fromstring(res.text)
-        return [
-            {
-                "phone": m.findtext("phone") or "Unknown", 
-                "date": m.findtext("date") or "", 
-                "content": m.findtext("content") or ""
-            } 
-            for m in root.findall(".//message")
-        ]
+        out = subprocess.check_output(["ip", "netns", "exec", ns, "python3", "-c", py_code], text=True).strip()
+        return json.loads(out)
     except Exception:
         return []
 
 def query_ussd(serial_port: str, ussd_code: str = "*100#") -> str:
-    """SIM Balance & USSD Tool."""
+    """SIM Balance & USSD Tool via AT Serial."""
     py_code = (
         "import serial, time\n"
         f"s = serial.Serial('{serial_port}', 115200, timeout=4)\n"

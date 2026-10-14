@@ -406,6 +406,7 @@
                   <th class="py-3 px-4">Bandwidth Quota</th>
                   <th class="py-3 px-4">Expires In</th>
                   <th class="py-3 px-4">Status</th>
+                  <th class="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody id="clientTableBody" class="divide-y divide-slate-100"></tbody>
@@ -749,6 +750,9 @@
       if (tabId === 'settings') loadSettings();
       if (tabId === 'system') loadSystemInfo();
       if (tabId === 'selling') loadClients();
+      if (tabId === 'groups') loadGroups();
+      if (tabId === 'ipv6') loadIpv6();
+      if (tabId === 'logs') loadLogs();
     }
 
     async function loadDashboard() {
@@ -1238,6 +1242,165 @@
 
     function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
     function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+    
+    // Mobile sidebar toggle
+    function toggleSidebar() {
+      const aside = document.querySelector('aside');
+      aside.classList.toggle('hidden');
+    }
+
+    // Selling Platform Client Functions
+    async function loadClients() {
+      try {
+        const res = await fetch('/api/selling');
+        const list = await res.json();
+        const tbody = document.getElementById('clientTableBody');
+        tbody.innerHTML = '';
+        if (!list || list.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-slate-400">No reseller clients registered. Click "Create Client".</td></tr>';
+          return;
+        }
+        list.forEach(c => {
+          const tr = document.createElement('tr');
+          tr.className = "hover:bg-slate-50 transition";
+          tr.innerHTML = `
+            <td class="py-3 px-4 font-bold text-slate-800">${c.name}</td>
+            <td class="py-3 px-4 font-mono font-bold text-blue-600">${c.ports}</td>
+            <td class="py-3 px-4 text-slate-600">${c.bandwidth_gb} GB</td>
+            <td class="py-3 px-4 text-slate-600">${c.expires_in_days} Days</td>
+            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">Active</span></td>
+            <td class="py-3 px-4 text-right">
+              <button onclick="deleteClient(${c.id})" class="text-rose-500 hover:text-rose-700 p-1" title="Delete Client"><i class="fa-solid fa-trash"></i></button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error("Error loading clients:", err);
+      }
+    }
+
+    async function submitClient(e) {
+      e.preventDefault();
+      const payload = {
+        name: document.getElementById('c_name').value.trim(),
+        ports: document.getElementById('c_ports').value.trim(),
+        bandwidth_gb: parseInt(document.getElementById('c_gb').value) || 50,
+        expiration_days: parseInt(document.getElementById('c_days').value) || 30
+      };
+      try {
+        await fetch('/api/selling', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        closeModal('clientModal');
+        showToast('Client created successfully!', 'success');
+        loadClients();
+      } catch (err) {
+        showToast('Error: ' + err.message, 'error');
+      }
+    }
+
+    async function deleteClient(id) {
+      if (!confirm('Delete client #' + id + '?')) return;
+      try {
+        await fetch('/api/selling/' + id, { method: 'DELETE' });
+        showToast('Client deleted', 'info');
+        loadClients();
+      } catch (err) {
+        showToast('Error: ' + err.message, 'error');
+      }
+    }
+
+    // Proxy Groups functions
+    async function loadGroups() {
+      try {
+        const res = await fetch('/api/groups');
+        const groups = await res.json();
+        const container = document.querySelector('#view-groups .grid');
+        container.innerHTML = groups.map(g => `
+          <div class="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
+            <div class="flex justify-between items-center mb-2">
+              <span class="font-bold text-slate-800 text-sm">${g.name}</span>
+              <span class="bg-blue-100 text-blue-700 text-[10px] px-2 py-0.5 rounded-full font-bold">Active</span>
+            </div>
+            <p class="text-xs text-slate-500 mb-3">Modems in this pool share routing and authorization parameters.</p>
+            <span class="text-xs text-slate-400 font-semibold">${g.modem_count} Modems assigned</span>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.error("Error loading groups:", e);
+      }
+    }
+
+    // Multiple IPv6 functions
+    async function loadIpv6() {
+      try {
+        const res = await fetch('/api/ipv6');
+        const list = await res.json();
+        const box = document.querySelector('#view-ipv6 .bg-blue-50');
+        if (!list || list.length === 0) {
+          box.innerHTML = '<p class="text-slate-500 text-xs">No active modems found for IPv6 probing.</p>';
+          return;
+        }
+        box.innerHTML = `
+          <div class="space-y-3">
+            <div class="font-bold text-slate-800 text-xs mb-2">Carrier Allocated IPv6 Prefixes:</div>
+            ${list.map(item => `
+              <div class="bg-white border border-blue-200 p-3 rounded-lg flex justify-between items-center text-xs">
+                <div>
+                  <span class="font-bold text-slate-800">Slot ${item.modem_id} (${item.iface})</span>
+                  <div class="font-mono text-blue-600 mt-0.5">${item.ipv6}</div>
+                </div>
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${item.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}">
+                  ${item.status === 'active' ? 'IPv6 Dual-Stack Active' : 'No Carrier IPv6'}
+                </span>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      } catch (e) {
+        console.error("Error loading IPv6:", e);
+      }
+    }
+
+    // Access Logging live fetch
+    let logInterval = null;
+    async function loadLogs() {
+      try {
+        const res = await fetch('/api/logs');
+        const data = await res.json();
+        const terminal = document.getElementById('logTerminal');
+        terminal.innerHTML = data.logs.map(line => `
+          <div class="leading-relaxed hover:bg-slate-800/50 px-1 py-0.5 rounded">${line}</div>
+        `).join('');
+        terminal.scrollTop = terminal.scrollHeight;
+      } catch (e) {
+        console.error("Error loading logs:", e);
+      }
+    }
+
+    // Non-blocking Reboot Action
+    async function rebootAction(type) {
+      const label = type === 'service' ? 'restart OpenProxy service' : 'reboot the host Ubuntu server';
+      if (!confirm('Are you sure you want to ' + label + '?')) return;
+      showToast('Sending ' + type + ' command...', 'info');
+      try {
+        const res = await fetch('/api/reboot/' + type, { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || 'Signal sent successfully!', 'success');
+        if (type === 'service') {
+          setTimeout(() => {
+            showToast('Service reloaded! Refreshing dashboard...', 'info');
+            loadDashboard();
+          }, 2500);
+        }
+      } catch (err) {
+        showToast('Command sent: ' + type, 'info');
+      }
+    }
 
     // Init
     loadDashboard();

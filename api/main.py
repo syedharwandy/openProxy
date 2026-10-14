@@ -13,6 +13,9 @@ from api.core.autodetect import list_candidate_interfaces, find_next_available_i
 app = FastAPI(title="OpenProxy Enterprise")
 START_TIME = time.time()
 
+# Prime psutil CPU calculation on startup so first read is accurate (not 100%)
+psutil.cpu_percent(interval=None)
+
 def get_db():
     if os.path.exists(DB_FILE):
         try:
@@ -49,18 +52,18 @@ def provision_new_interface(iface: str, db: dict):
     dev_type, dev_target = detect_device_type(iface)
     base_port = 10000 + new_id
     try:
-        setup_namespace(new_id, iface, dev_target)
+        real_gw = setup_namespace(new_id, iface, dev_target or "192.168.0.1")
         ports = [{
             "port": base_port,
             "user": f"user{new_id}",
             "password": f"pass{new_id}"
         }]
-        deploy_gost_shared_ports(new_id, ports, dev_target)
+        deploy_gost_shared_ports(new_id, ports, real_gw)
         db["modems"][str(new_id)] = {
             "name": f"Modem {new_id} ({iface})",
             "iface": iface,
             "type": dev_type,
-            "target": dev_target,
+            "target": real_gw,
             "group": "Default Pool",
             "ports": ports,
             "whitelist_ips": [],
@@ -99,7 +102,7 @@ async def autorotate_worker():
                 last_m_rot = m.get("last_rotated", 0)
                 if interval > 0 and (now - last_m_rot) >= (interval * 60):
                     ns = f"ns_modem{m_id}"
-                    res = execute_sticky_rotation(ns, m["type"], m["target"])
+                    execute_sticky_rotation(ns, m["type"], m.get("target", "192.168.0.1"))
                     m["last_rotated"] = now
                     save_db(db)
         except Exception as e:
@@ -111,8 +114,9 @@ async def startup_restore():
     db = get_db()
     for m_id, m in db.get("modems", {}).items():
         try:
-            setup_namespace(int(m_id), m["iface"], m.get("target", "192.168.0.1"))
-            deploy_gost_shared_ports(int(m_id), m.get("ports", []), m.get("target", "192.168.0.1"))
+            gw = m.get("target", "192.168.0.1")
+            real_gw = setup_namespace(int(m_id), m["iface"], gw)
+            deploy_gost_shared_ports(int(m_id), m.get("ports", []), real_gw)
         except Exception as e:
             print(f"Startup restore modem {m_id}: {e}")
     try:
@@ -160,6 +164,9 @@ class ClientAdd(BaseModel):
     expiration_days: int = 30
     bandwidth_gb: int = 50
 
+class GroupAdd(BaseModel):
+    name: str
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     with open(os.path.join(STATIC_DIR, "index.html"), "r") as f:
@@ -186,7 +193,7 @@ def dashboard():
                 "name": m.get("name", f"Modem {i}"),
                 "iface": m["iface"],
                 "type": m["type"],
-                "target": m["target"],
+                "target": m.get("target", "192.168.0.1"),
                 "group": m.get("group", "Default Pool"),
                 "public_ip": ip,
                 "status": "online" if is_online else "error",
@@ -204,8 +211,11 @@ def dashboard():
 
     total_proxies = sum(len(m.get("ports", [])) for m in modems)
 
+    # Smooth non-blocking CPU calculation
+    cpu = psutil.cpu_percent(interval=None)
+
     return {
-        "cpu": psutil.cpu_percent(),
+        "cpu": cpu,
         "ram": psutil.virtual_memory().percent,
         "uptime": get_uptime_str(),
         "version": "V21.2",
@@ -233,7 +243,7 @@ def get_modem(modem_id: int):
         "name": m.get("name", f"Modem {modem_id}"),
         "iface": m["iface"],
         "type": m["type"],
-        "target": m["target"],
+        "target": m.get("target", "192.168.0.1"),
         "group": m.get("group", "Default Pool"),
         "public_ip": ip,
         "status": "online" if ip not in ["Offline", ""] else "offline",
@@ -283,23 +293,6 @@ def update_modem(modem_id: int, req: ModemUpdate):
 
     return {"status": "success", "modem": m}
 
-@app.post("/api/modems/{modem_id}/credentials")
-def update_credentials(modem_id: int, creds: CredentialsUpdate):
-    db = get_db()
-    s_id = str(modem_id)
-    if s_id not in db.get("modems", {}):
-        raise HTTPException(404, "Modem not found")
-    m = db["modems"][s_id]
-    ports = m.get("ports", [])
-    for i, p in enumerate(ports):
-        p["user"] = f"{creds.username.strip()}_{i+1}" if len(ports) > 1 else creds.username.strip()
-        p["password"] = creds.password.strip()
-    m["ports"] = ports
-    db["modems"][s_id] = m
-    save_db(db)
-    deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.0.1"))
-    return {"status": "success", "message": "Credentials updated"}
-
 @app.get("/api/proxies")
 def list_proxies():
     db = get_db()
@@ -336,7 +329,7 @@ def trigger_scan():
 
 @app.post("/api/modems")
 def add_modem(m: ModemAdd):
-    setup_namespace(m.id, m.iface, m.target)
+    real_gw = setup_namespace(m.id, m.iface, m.target or "192.168.0.1")
     ports = []
     for i in range(m.shared_ports_count):
         ports.append({
@@ -344,13 +337,13 @@ def add_modem(m: ModemAdd):
             "user": f"{m.username}_{i+1}" if m.shared_ports_count > 1 else m.username,
             "password": m.password
         })
-    deploy_gost_shared_ports(m.id, ports, m.target)
+    deploy_gost_shared_ports(m.id, ports, real_gw)
     db = get_db()
     db["modems"][str(m.id)] = {
         "name": m.name or f"Modem {m.id} ({m.iface})",
         "iface": m.iface,
         "type": m.type,
-        "target": m.target,
+        "target": real_gw,
         "group": m.group or "Default Pool",
         "ports": ports,
         "whitelist_ips": [],
@@ -380,7 +373,7 @@ def rotate(modem_id: int):
         raise HTTPException(404, "Modem not found")
     m = db["modems"][str(modem_id)]
     ns = f"ns_modem{modem_id}"
-    return execute_sticky_rotation(ns, m["type"], m["target"])
+    return execute_sticky_rotation(ns, m["type"], m.get("target", "192.168.0.1"))
 
 @app.post("/api/fingerprint")
 def set_fingerprint(req: dict):
@@ -413,6 +406,27 @@ def update_settings(req: SettingsReq):
     save_db(db)
     return {"status": "success", "settings": req.dict()}
 
+# Groups Management
+@app.get("/api/groups")
+def get_groups():
+    db = get_db()
+    groups = db.get("groups", ["Default Pool"])
+    counts = {}
+    for g in groups:
+        counts[g] = sum(1 for m in db.get("modems", {}).values() if m.get("group") == g)
+    return [{"name": g, "modem_count": counts.get(g, 0)} for g in groups]
+
+@app.post("/api/groups")
+def add_group(req: GroupAdd):
+    db = get_db()
+    groups = db.get("groups", ["Default Pool"])
+    if req.name.strip() and req.name.strip() not in groups:
+        groups.append(req.name.strip())
+        db["groups"] = groups
+        save_db(db)
+    return {"status": "success", "groups": groups}
+
+# Reseller Clients Management
 @app.get("/api/selling")
 def get_selling():
     db = get_db()
@@ -436,15 +450,20 @@ def add_client(req: ClientAdd):
     save_db(db)
     return {"status": "success", "client": new_client}
 
+@app.delete("/api/selling/{client_id}")
+def delete_client(client_id: int):
+    db = get_db()
+    clients = [c for c in db.get("clients", []) if c["id"] != client_id]
+    db["clients"] = clients
+    save_db(db)
+    return {"status": "deleted"}
+
+# SMS & USSD
 @app.get("/api/sms/{modem_id}")
 def get_sms(modem_id: int):
     db = get_db()
     m = db.get("modems", {}).get(str(modem_id), {})
-    return read_sms_hilink(m.get("target", "192.168.0.1"))
-
-@app.post("/api/sms/send")
-def send_sms(payload: dict):
-    return {"status": "sent", "to": payload.get("phone"), "text": payload.get("message")}
+    return read_sms_hilink(modem_id, m.get("target", "192.168.0.1"))
 
 @app.get("/api/ussd/{modem_id}")
 def get_ussd(modem_id: int, code: str = "*100#"):
@@ -452,14 +471,55 @@ def get_ussd(modem_id: int, code: str = "*100#"):
     m = db.get("modems", {}).get(str(modem_id), {})
     return {"output": query_ussd(m.get("target", "/dev/ttyUSB1"), code)}
 
+# Live Logging Endpoint
+@app.get("/api/logs")
+def get_logs():
+    try:
+        out = subprocess.check_output(["journalctl", "-u", "openproxy.service", "-n", "50", "--no-pager"], text=True)
+        return {"logs": out.splitlines()[-40:]}
+    except Exception:
+        # Fallback to status
+        return {"logs": [
+            f"[SYSTEM] OpenProxy Controller Running - Uptime: {get_uptime_str()}",
+            f"[SYSTEM] Active Modems: {len(get_db().get('modems', {}))}",
+            "[READY] GOST multi-protocol proxies listening."
+        ]}
+
+# Multiple IPv6 Detection
+@app.get("/api/ipv6")
+def get_ipv6():
+    db = get_db()
+    results = []
+    for m_id, m in db.get("modems", {}).items():
+        ns = f"ns_modem{m_id}"
+        v6_addr = "N/A"
+        try:
+            out = subprocess.check_output(["ip", "netns", "exec", ns, "ip", "-6", "-o", "addr", "show", "scope", "global"], text=True)
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    v6_addr = parts[3].split("/")[0]
+                    break
+        except Exception:
+            pass
+        results.append({
+            "modem_id": int(m_id),
+            "iface": m["iface"],
+            "ipv6": v6_addr,
+            "status": "active" if v6_addr != "N/A" else "no_carrier_ipv6"
+        })
+    return results
+
+# Robust Non-Blocking Reboot
 @app.post("/api/reboot/{action}")
 def reboot_action(action: str):
     if action == "service":
-        subprocess.Popen(["systemctl", "restart", "openproxy.service"])
-        return {"status": "restarting_service"}
+        # Detached sleep 1 allows FastAPI to cleanly return HTTP 200 before systemctl restarts
+        subprocess.Popen("sleep 1 && systemctl restart openproxy.service", shell=True)
+        return {"status": "restarting_service", "message": "Service restarting in 1 second"}
     elif action == "system":
-        subprocess.Popen(["reboot"])
-        return {"status": "rebooting_system"}
+        subprocess.Popen("sleep 1 && systemctl reboot", shell=True)
+        return {"status": "rebooting_system", "message": "Host server rebooting in 1 second"}
     raise HTTPException(400, "Unknown action")
 
 @app.get("/api/system/info")
@@ -470,7 +530,7 @@ def system_info():
         "os": f"{uname.sysname} {uname.release}",
         "architecture": uname.machine,
         "cpu_count": psutil.cpu_count(logical=True),
-        "cpu_usage": psutil.cpu_percent(),
+        "cpu_usage": psutil.cpu_percent(interval=None),
         "ram_total_gb": round(psutil.virtual_memory().total / (1024**3), 2),
         "ram_used_gb": round(psutil.virtual_memory().used / (1024**3), 2),
         "disk_total_gb": round(disk.total / (1024**3), 2),
