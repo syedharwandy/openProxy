@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>OpenProxy Enterprise - Mobile Proxy Farm</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { colors: { darkbg: '#0b1120', cardbg: '#162032', borderbg: '#223048' } } }
+    }
+  </script>
+</head>
+<body class="bg-darkbg text-slate-100 font-sans min-h-screen">
+  <header class="bg-cardbg border-b border-borderbg sticky top-0 z-50 px-6 py-4 flex justify-between items-center">
+    <div class="flex items-center space-x-3">
+      <div class="bg-gradient-to-tr from-blue-600 to-cyan-500 p-2.5 rounded-xl shadow-lg shadow-cyan-500/20">
+        <i class="fa-solid fa-server text-white text-xl"></i>
+      </div>
+      <div>
+        <h1 class="font-bold text-lg flex items-center space-x-2">
+          <span>OpenProxy Enterprise</span>
+          <span class="text-[11px] bg-blue-500/20 text-blue-400 border border-blue-500/40 px-2 py-0.5 rounded-full uppercase tracking-wider font-semibold">Keyless Edition</span>
+        </h1>
+        <p class="text-xs text-slate-400">Enterprise Mobile Proxy: Shared Ports, Sticky IP, OS Spoofing & SMS</p>
+      </div>
+    </div>
+    <div class="flex items-center space-x-4">
+      <div class="hidden sm:flex items-center space-x-4 bg-slate-900/60 px-4 py-2 rounded-xl border border-borderbg text-xs">
+        <div><i class="fa-solid fa-microchip text-blue-400 mr-1"></i> CPU: <span id="cpu">0%</span></div>
+        <div><i class="fa-solid fa-memory text-purple-400 mr-1"></i> RAM: <span id="ram">0%</span></div>
+        <div><i class="fa-solid fa-fingerprint text-emerald-400 mr-1"></i> OS: <span id="fpProfile" class="uppercase font-bold">Android</span></div>
+      </div>
+      <button onclick="openModal('addModal')" class="bg-blue-600 hover:bg-blue-500 transition px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-2 shadow-lg shadow-blue-600/30">
+        <i class="fa-solid fa-plus"></i><span>Add Modem</span>
+      </button>
+      <button onclick="openModal('fpModal')" class="bg-slate-800 hover:bg-slate-700 transition px-3 py-2 rounded-xl text-xs font-bold flex items-center space-x-1">
+        <i class="fa-solid fa-shield-halved text-cyan-400"></i><span>Spoof OS</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto p-6">
+    <div class="flex justify-between items-center mb-6">
+      <h2 class="text-xs uppercase tracking-widest text-slate-400 font-bold">Modem Fleet & Shared Ports</h2>
+      <button onclick="loadDashboard()" class="text-xs text-slate-400 hover:text-white flex items-center space-x-1">
+        <i class="fa-solid fa-rotate mr-1"></i> Refresh
+      </button>
+    </div>
+    <div id="grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+  </main>
+
+  <!-- Add Modem Modal -->
+  <div id="addModal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-cardbg border border-borderbg w-full max-w-md rounded-2xl p-6 shadow-2xl">
+      <h3 class="font-bold text-base mb-4 flex items-center space-x-2">
+        <i class="fa-solid fa-plus-circle text-blue-400"></i>
+        <span>Add 4G Dongle / Android Phone</span>
+      </h3>
+      <form onsubmit="submitModem(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="text-slate-400">Modem ID (Numeric: 1, 2, 3...)</label>
+          <input type="number" id="m_id" required value="1" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+        </div>
+        <div>
+          <label class="text-slate-400">Network Interface (usb0, eth1, rndis0)</label>
+          <input type="text" id="m_iface" required value="usb0" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-slate-400">Proxy Username</label>
+            <input type="text" id="m_user" required value="proxyuser" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+          </div>
+          <div>
+            <label class="text-slate-400">Proxy Password</label>
+            <input type="text" id="m_pass" required value="proxypass" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+          </div>
+        </div>
+        <div>
+          <label class="text-slate-400">Device Type</label>
+          <select id="m_type" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+            <option value="hilink">Huawei HiLink Web (192.168.8.1)</option>
+            <option value="at">AT Serial Modem (/dev/ttyUSB1)</option>
+            <option value="android">Android Phone (ADB Tethering)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-slate-400">Target (Gateway IP, Serial Port, or ADB Serial)</label>
+          <input type="text" id="m_target" value="192.168.8.1" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="text-slate-400">Base Port (SOCKS5 UDP)</label>
+            <input type="number" id="m_port" required value="10001" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+          </div>
+          <div>
+            <label class="text-slate-400">Shared Ports Count (Per SIM)</label>
+            <input type="number" id="m_shared" required value="1" min="1" max="50" class="w-full bg-slate-900 border border-borderbg rounded-lg p-2.5 mt-1">
+          </div>
+        </div>
+        <div class="flex justify-end space-x-3 pt-3">
+          <button type="button" onclick="closeModal('addModal')" class="px-4 py-2 rounded-lg bg-slate-800">Cancel</button>
+          <button type="submit" class="px-5 py-2 rounded-lg bg-blue-600 font-bold hover:bg-blue-500">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Fingerprint Modal -->
+  <div id="fpModal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-cardbg border border-borderbg w-full max-w-sm rounded-2xl p-6 shadow-2xl text-xs">
+      <h3 class="font-bold text-base mb-4 flex items-center space-x-2">
+        <i class="fa-solid fa-fingerprint text-cyan-400"></i>
+        <span>TCP/IP OS Fingerprint Profile</span>
+      </h3>
+      <p class="text-slate-400 mb-4">Rewrites outgoing SYN packets, TTL, and clamps LTE MSS to match mobile device signatures.</p>
+      <div class="space-y-2">
+        <button onclick="setFp('android')" class="w-full p-3 rounded-xl bg-slate-900 border border-borderbg hover:border-cyan-500 flex justify-between items-center font-bold">
+          <span>Android (TTL 64, MSS 1380, TS Off)</span>
+          <i class="fa-brands fa-android text-emerald-400 text-lg"></i>
+        </button>
+        <button onclick="setFp('ios')" class="w-full p-3 rounded-xl bg-slate-900 border border-borderbg hover:border-cyan-500 flex justify-between items-center font-bold">
+          <span>iOS (TTL 64, MSS 1400, TS On)</span>
+          <i class="fa-brands fa-apple text-slate-200 text-lg"></i>
+        </button>
+        <button onclick="setFp('windows')" class="w-full p-3 rounded-xl bg-slate-900 border border-borderbg hover:border-cyan-500 flex justify-between items-center font-bold">
+          <span>Windows 11 (TTL 128, MSS 1440)</span>
+          <i class="fa-brands fa-windows text-blue-400 text-lg"></i>
+        </button>
+      </div>
+      <div class="text-right pt-4">
+        <button onclick="closeModal('fpModal')" class="px-4 py-1.5 rounded-lg bg-slate-800">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SMS Modal -->
+  <div id="smsModal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-cardbg border border-borderbg w-full max-w-lg rounded-2xl p-6 shadow-2xl text-xs">
+      <div class="flex justify-between items-center border-b border-borderbg pb-3 mb-4">
+        <h3 class="font-bold text-sm flex items-center space-x-2">
+          <i class="fa-solid fa-envelope-open-text text-amber-400"></i>
+          <span>SMS Inbox (Modem <span id="smsModemId"></span>)</span>
+        </h3>
+        <button onclick="closeModal('smsModal')" class="text-slate-400 hover:text-white text-base"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div id="smsList" class="space-y-2 max-h-96 overflow-y-auto"></div>
+    </div>
+  </div>
+
+  <script>
+    async function loadDashboard() {
+      const res = await fetch('/api/dashboard');
+      const data = await res.json();
+      document.getElementById('cpu').innerText = data.cpu + '%';
+      document.getElementById('ram').innerText = data.ram + '%';
+      document.getElementById('fpProfile').innerText = data.fingerprint;
+
+      const grid = document.getElementById('grid');
+      if (data.modems.length === 0) {
+        grid.innerHTML = `<div class="col-span-full py-16 text-center text-slate-500">No modems active. Click "Add Modem" to begin.</div>`;
+        return;
+      }
+      grid.innerHTML = data.modems.map(m => `
+        <div class="bg-cardbg border border-borderbg rounded-2xl p-5 shadow-xl flex flex-col justify-between">
+          <div>
+            <div class="flex justify-between items-start mb-3">
+              <div class="flex items-center space-x-2.5">
+                <div class="w-3 h-3 rounded-full ${m.status === 'online' ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}"></div>
+                <div>
+                  <h3 class="font-bold text-sm">Modem ${m.id} (${m.iface})</h3>
+                  <span class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">${m.type} Mode</span>
+                </div>
+              </div>
+              <button onclick="deleteModem(${m.id})" class="text-slate-500 hover:text-rose-400 text-xs p-1" title="Delete"><i class="fa-solid fa-trash"></i></button>
+            </div>
+
+            <!-- Public IP Box -->
+            <div class="bg-slate-900/90 border border-slate-800 p-3 rounded-xl mb-3">
+              <span class="text-[10px] text-slate-400 uppercase font-bold">4G Public IP</span>
+              <div class="flex justify-between items-center mt-1">
+                <span id="ip-${m.id}" class="font-mono text-base font-bold text-cyan-400">${m.public_ip}</span>
+                <button onclick="navigator.clipboard.writeText('${m.public_ip}')" class="text-slate-400 hover:text-white text-xs"><i class="fa-regular fa-copy"></i></button>
+              </div>
+            </div>
+
+            <!-- Shared Ports List -->
+            <div class="mb-4">
+              <span class="text-[10px] text-slate-400 uppercase font-bold">Shared Ports (${m.ports.length})</span>
+              <div class="space-y-1.5 mt-1 max-h-32 overflow-y-auto pr-1">
+                ${m.ports.map(p => `
+                  <div class="flex justify-between items-center bg-slate-900/60 border border-borderbg px-2.5 py-1.5 rounded-lg text-xs">
+                    <div>
+                      <span class="font-mono font-bold text-blue-400">:${p.port} (SOCKS5)</span>
+                      <span class="font-mono font-bold text-purple-400 ml-1">:${p.port + 1000} (HTTP)</span>
+                    </div>
+                    <button onclick="copyProxy(${p.port}, '${p.user}', '${p.password}')" class="text-slate-500 hover:text-slate-200" title="Copy"><i class="fa-regular fa-copy text-xs"></i></button>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="pt-3 border-t border-borderbg flex space-x-2">
+            <button id="btn-${m.id}" onclick="rotateModem(${m.id})" class="flex-1 bg-blue-600 hover:bg-blue-500 transition py-2 rounded-xl text-xs font-bold flex items-center justify-center space-x-1.5 shadow-md shadow-blue-600/30">
+              <i class="fa-solid fa-arrows-rotate"></i>
+              <span>Sticky Rotate</span>
+            </button>
+            <button onclick="openSms(${m.id})" class="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-xl text-xs font-bold flex items-center space-x-1" title="SMS Inbox">
+              <i class="fa-solid fa-comment-sms text-amber-400"></i>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function rotateModem(id) {
+      const btn = document.getElementById(`btn-${id}`);
+      const ip = document.getElementById(`ip-${id}`);
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Verifying...</span>`;
+      btn.disabled = true;
+      ip.innerText = "Switching...";
+      try {
+        const res = await fetch(`/api/rotate/${id}`, { method: 'POST' });
+        const data = await res.json();
+        ip.innerText = data.new_ip;
+      } catch {
+        ip.innerText = "Error";
+      } finally {
+        btn.innerHTML = `<i class="fa-solid fa-arrows-rotate"></i> <span>Sticky Rotate</span>`;
+        btn.disabled = false;
+      }
+    }
+
+    async function openSms(id) {
+      document.getElementById('smsModemId').innerText = id;
+      openModal('smsModal');
+      const box = document.getElementById('smsList');
+      box.innerHTML = `<p class="text-slate-400 text-center py-4">Reading SIM SMS inbox...</p>`;
+      const res = await fetch(`/api/sms/${id}`);
+      const list = await res.json();
+      if (!list || list.length === 0) {
+        box.innerHTML = `<p class="text-slate-400 text-center py-4">No SMS messages found.</p>`;
+        return;
+      }
+      box.innerHTML = list.map(m => `
+        <div class="bg-slate-900 border border-borderbg p-2.5 rounded-lg text-xs">
+          <div class="flex justify-between font-bold text-cyan-400 mb-0.5">
+            <span>${m.phone}</span>
+            <span class="text-slate-500 font-normal">${m.date}</span>
+          </div>
+          <p class="text-slate-300">${m.content}</p>
+        </div>
+      `).join('');
+    }
+
+    async function setFp(p) {
+      await fetch('/api/fingerprint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: p })
+      });
+      closeModal('fpModal');
+      loadDashboard();
+    }
+
+    async function deleteModem(id) {
+      if (!confirm(`Delete Modem ${id}?`)) return;
+      await fetch(`/api/modems/${id}`, { method: 'DELETE' });
+      loadDashboard();
+    }
+
+    function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
+    function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+    async function submitModem(e) {
+      e.preventDefault();
+      const payload = {
+        id: parseInt(document.getElementById('m_id').value),
+        iface: document.getElementById('m_iface').value.trim(),
+        type: document.getElementById('m_type').value,
+        target: document.getElementById('m_target').value.trim(),
+        base_port: parseInt(document.getElementById('m_port').value),
+        shared_ports_count: parseInt(document.getElementById('m_shared').value),
+        username: document.getElementById('m_user').value.trim() || 'proxyuser',
+        password: document.getElementById('m_pass').value.trim() || 'proxypass'
+      };
+      await fetch('/api/modems', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      closeModal('addModal');
+      loadDashboard();
+    }
+
+    function copyProxy(port, user, pass) {
+      const str = `${window.location.hostname}:${port}:${user}:${pass}`;
+      navigator.clipboard.writeText(str);
+      alert('Proxy Copied:\n' + str);
+    }
+
+    loadDashboard();
+    setInterval(loadDashboard, 10000);
+  </script>
+</body>
+</html>

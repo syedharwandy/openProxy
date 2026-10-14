@@ -1,0 +1,11 @@
+# Udev rules for auto-switching Huawei & Brovi LTE modems
+ACTION!="add", GOTO="modeswitch_rules_end"
+SUBSYSTEM!="usb", GOTO="modeswitch_rules_end"
+ATTRS{bInterfaceNumber}!="00", GOTO="modeswitch_rules_end"
+
+# Huawei E3372-325 & Brovi
+ATTR{idVendor}=="3566", ATTR{idProduct}=="2001", RUN+="/opt/openproxy/scripts/huawei_switch.sh %p"
+# Huawei E3372 HiLink
+ATTR{idVendor}=="12d1", ATTR{idProduct}=="1f01", RUN+="/opt/openproxy/scripts/huawei_switch.sh %p"
+
+LABEL="modeswitch_rules_end"
