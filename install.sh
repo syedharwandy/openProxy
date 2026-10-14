@@ -41,6 +41,34 @@ rm -rf "${TARGET_DIR}" 2>/dev/null || true
 rm -rf /run/openproxy 2>/dev/null || true
 
 # 3. Install System Dependencies
+
+# Handle background package managers (unattended-upgr, apt locks)
+wait_for_apt_locks() {
+    echo "[*] Checking for background system updates..."
+    systemctl stop unattended-upgrades.service 2>/dev/null || true
+    local max_wait=20
+    local waited=0
+    while pgrep -f "(apt|apt-get|dpkg|unattended-upgr|packagekitd)" >/dev/null 2>&1 || \
+          (command -v fuser >/dev/null 2>&1 && fuser /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1); do
+        if [[ $waited -ge $max_wait ]]; then
+            echo "[!] Background updater is holding APT lock. Freeing lock..."
+            pkill -9 -f "unattended-upgr" 2>/dev/null || true
+            pkill -9 -f "packagekitd" 2>/dev/null || true
+            pkill -9 -x apt 2>/dev/null || true
+            pkill -9 -x apt-get 2>/dev/null || true
+            pkill -9 -x dpkg 2>/dev/null || true
+            sleep 1
+            rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock 2>/dev/null || true
+            dpkg --configure -a 2>/dev/null || true
+            break
+        fi
+        echo "[*] Waiting for background updater to finish (waited ${waited}s / ${max_wait}s)..."
+        sleep 2
+        waited=$((waited + 2))
+    done
+}
+
+wait_for_apt_locks
 echo "[1/6] Installing Ubuntu system dependencies..."
 apt-get update -y
 apt-get install -y curl wget jq git iptables net-tools python3 python3-pip python3-venv \
