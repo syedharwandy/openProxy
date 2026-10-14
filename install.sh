@@ -44,7 +44,7 @@ rm -rf /run/openproxy 2>/dev/null || true
 echo "[1/6] Installing Ubuntu system dependencies..."
 apt-get update -y
 apt-get install -y curl wget jq git iptables net-tools python3 python3-pip python3-venv \
-    usb-modeswitch uhubctl adb wireguard libmbim-utils isc-dhcp-client udhcpc
+    usb-modeswitch uhubctl adb wireguard libmbim-utils isc-dhcp-client udhcpc socat
 
 # 4. Install GOST Proxy Core
 echo "[2/6] Detecting architecture & installing official GOST binary..."

@@ -1,9 +1,48 @@
-import subprocess, os, time
+import subprocess, os, time, re
 
 PID_DIR = "/run/openproxy"
 
-def setup_namespace(modem_id: int, iface: str, target_gw: str = "192.168.8.1"):
-    """Isolates each modem into its own Linux Network Namespace (ip netns)."""
+def detect_modem_gateway_inside_ns(ns: str, iface: str, fallback_gw: str = "192.168.0.1") -> str:
+    """
+    Dynamically finds the true cellular modem gateway inside the namespace.
+    1. Checks if DHCP assigned a default route.
+    2. Probes common gateways (192.168.0.1, 192.168.8.1, 192.168.1.1).
+    """
+    # 1. Check if default route exists from DHCP
+    try:
+        route_out = subprocess.check_output(["ip", "netns", "exec", ns, "ip", "route", "show", "default"], text=True)
+        m = re.search(r'via\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)', route_out)
+        if m:
+            detected = m.group(1).strip()
+            print(f"[✔] Detected gateway via DHCP: {detected}")
+            return detected
+    except Exception:
+        pass
+
+    # 2. Probe common cellular gateways: 192.168.0.1 first, then 192.168.8.1, then 192.168.1.1
+    gateways_to_probe = [fallback_gw, "192.168.0.1", "192.168.8.1", "192.168.1.1"]
+    gateways_to_probe = list(dict.fromkeys(gateways_to_probe))
+
+    for gw in gateways_to_probe:
+        prefix = ".".join(gw.split(".")[:3])
+        test_ip = f"{prefix}.100/24"
+        subprocess.call(["ip", "netns", "exec", ns, "ip", "addr", "flush", "dev", iface], stderr=subprocess.DEVNULL)
+        subprocess.call(["ip", "netns", "exec", ns, "ip", "addr", "add", test_ip, "dev", iface], stderr=subprocess.DEVNULL)
+        res = subprocess.call(["ip", "netns", "exec", ns, "ping", "-c", "1", "-W", "1", gw], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res == 0:
+            print(f"[✔] Gateway probe SUCCESS: {gw} responded!")
+            subprocess.call(["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", gw, "dev", iface], stderr=subprocess.DEVNULL)
+            return gw
+
+    # 3. Fallback
+    prefix = ".".join(fallback_gw.split(".")[:3])
+    subprocess.call(["ip", "netns", "exec", ns, "ip", "addr", "flush", "dev", iface], stderr=subprocess.DEVNULL)
+    subprocess.call(["ip", "netns", "exec", ns, "ip", "addr", "add", f"{prefix}.100/24", "dev", iface], stderr=subprocess.DEVNULL)
+    subprocess.call(["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", fallback_gw, "dev", iface], stderr=subprocess.DEVNULL)
+    return fallback_gw
+
+def setup_namespace(modem_id: int, iface: str, target_gw: str = "192.168.0.1") -> str:
+    """Isolates each modem into its own Linux Network Namespace (ip netns). Returns detected gateway."""
     ns = f"ns_modem{modem_id}"
     veth_h = f"veth_h{modem_id}"
     veth_ns = f"veth_ns{modem_id}"
@@ -37,30 +76,16 @@ def setup_namespace(modem_id: int, iface: str, target_gw: str = "192.168.8.1"):
     subprocess.call(["ip", "netns", "exec", ns, "udhcpc", "-i", iface, "-n", "-q"], stderr=subprocess.DEVNULL)
     time.sleep(1)
 
-    # Static IP fallback: ensure interface has an IP and default route
-    try:
-        ip_check = subprocess.check_output(["ip", "netns", "exec", ns, "ip", "-o", "-4", "addr", "show", iface], text=True)
-        if not ip_check.strip():
-            # Generate static IP matching target gateway subnet
-            gw_prefix = ".".join(target_gw.split(".")[:3])
-            static_ip = f"{gw_prefix}.100/24"
-            subprocess.call(["ip", "netns", "exec", ns, "ip", "addr", "add", static_ip, "dev", iface], stderr=subprocess.DEVNULL)
-            subprocess.call(["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", target_gw, "dev", iface], stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-
-    try:
-        route_check = subprocess.check_output(["ip", "netns", "exec", ns, "ip", "route", "show", "default"], text=True)
-        if not route_check.strip():
-            subprocess.call(["ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", target_gw, "dev", iface], stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+    # Detect or probe true gateway
+    real_gw = detect_modem_gateway_inside_ns(ns, iface, target_gw or "192.168.0.1")
 
     # 5. Isolate Carrier DNS inside namespace
     dns_dir = f"/etc/netns/{ns}"
     os.makedirs(dns_dir, exist_ok=True)
     with open(f"{dns_dir}/resolv.conf", "w") as f:
-        f.write(f"nameserver {target_gw}\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        f.write(f"nameserver {real_gw}\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+
+    return real_gw
 
 def stop_gost_for_modem(modem_id: int):
     """Safely kills GOST running for a specific modem using PID file."""
@@ -79,7 +104,7 @@ def stop_gost_for_modem(modem_id: int):
         except Exception:
             pass
 
-def deploy_gost_shared_ports(modem_id: int, ports_list: list, target_gw: str = "192.168.8.1"):
+def deploy_gost_shared_ports(modem_id: int, ports_list: list, target_gw: str = "192.168.0.1"):
     """
     Shared Ports Engine & Dedicated HiLink Port Forwarding.
     - SOCKS5 Port: 10000 + ID (e.g. 10001)
@@ -90,6 +115,7 @@ def deploy_gost_shared_ports(modem_id: int, ports_list: list, target_gw: str = "
     veth_h = f"veth_h{modem_id}"
     ns_ip = f"10.200.{modem_id}.2"
     hilink_port = 12000 + modem_id
+    gw = target_gw or "192.168.0.1"
 
     stop_gost_for_modem(modem_id)
 
@@ -113,7 +139,7 @@ def deploy_gost_shared_ports(modem_id: int, ports_list: list, target_gw: str = "
             subprocess.call(f"iptables -A FORWARD -p {proto} -d {ns_ip} --dport {http_port} -j ACCEPT", shell=True)
 
     # 3. Dedicated HiLink Web UI Forwarding (Port 12000 + modem_id -> target_gw:80)
-    gost_args.extend(["-L", f"tcp://:{hilink_port}/{target_gw}:80"])
+    gost_args.extend(["-L", f"tcp://:{hilink_port}/{gw}:80"])
     subprocess.call(f"iptables -t nat -A PREROUTING -p tcp --dport {hilink_port} -j DNAT --to-destination {ns_ip}:{hilink_port}", shell=True)
     subprocess.call(f"iptables -A FORWARD -p tcp -d {ns_ip} --dport {hilink_port} -j ACCEPT", shell=True)
 

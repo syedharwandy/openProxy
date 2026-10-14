@@ -74,4 +74,4 @@ def detect_device_type(iface: str) -> tuple:
         return ("at", "/dev/cdc-wdm0")
 
     # 3. Default for USB dongles: HiLink Web interface at standard gateway
-    return ("hilink", "192.168.8.1")
+    return ("hilink", "192.168.0.1")

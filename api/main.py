@@ -111,8 +111,8 @@ async def startup_restore():
     db = get_db()
     for m_id, m in db.get("modems", {}).items():
         try:
-            setup_namespace(int(m_id), m["iface"], m.get("target", "192.168.8.1"))
-            deploy_gost_shared_ports(int(m_id), m.get("ports", []), m.get("target", "192.168.8.1"))
+            setup_namespace(int(m_id), m["iface"], m.get("target", "192.168.0.1"))
+            deploy_gost_shared_ports(int(m_id), m.get("ports", []), m.get("target", "192.168.0.1"))
         except Exception as e:
             print(f"Startup restore modem {m_id}: {e}")
     try:
@@ -128,7 +128,7 @@ class ModemAdd(BaseModel):
     iface: str
     name: Optional[str] = None
     type: str = "hilink"
-    target: str = "192.168.8.1"
+    target: str = "192.168.0.1"
     base_port: int = 10001
     username: str = "proxyuser"
     password: str = "proxypass"
@@ -279,7 +279,7 @@ def update_modem(modem_id: int, req: ModemUpdate):
     save_db(db)
 
     if needs_gost_restart:
-        deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.8.1"))
+        deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.0.1"))
 
     return {"status": "success", "modem": m}
 
@@ -297,7 +297,7 @@ def update_credentials(modem_id: int, creds: CredentialsUpdate):
     m["ports"] = ports
     db["modems"][s_id] = m
     save_db(db)
-    deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.8.1"))
+    deploy_gost_shared_ports(modem_id, ports, m.get("target", "192.168.0.1"))
     return {"status": "success", "message": "Credentials updated"}
 
 @app.get("/api/proxies")
@@ -440,7 +440,7 @@ def add_client(req: ClientAdd):
 def get_sms(modem_id: int):
     db = get_db()
     m = db.get("modems", {}).get(str(modem_id), {})
-    return read_sms_hilink(m.get("target", "192.168.8.1"))
+    return read_sms_hilink(m.get("target", "192.168.0.1"))
 
 @app.post("/api/sms/send")
 def send_sms(payload: dict):
